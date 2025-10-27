@@ -18,6 +18,7 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from scipy.io import loadmat
+import h5py
 from pathlib import Path
 from typing import Tuple, Optional, Dict
 import warnings
@@ -71,25 +72,165 @@ class CSIDataset(Dataset):
     def _load_data(self):
         """Load .mat file and extract channel matrices."""
         try:
-            mat_data = loadmat(str(self.mat_file_path))
+            print(f"Attempting to load: {self.mat_file_path}")
             
-            # Extract channel matrices
-            H_perfect_all = mat_data['H_perfect_all']  # [768,14,4,2,10,1000]
-            H_estimated_all = mat_data['H_estimated_all']  # [768,14,4,2,10,1000]
+            # Try h5py first (for MATLAB v7.3 files)
+            try:
+                with h5py.File(str(self.mat_file_path), 'r') as f:
+                    print(f"✅ Using h5py (MATLAB v7.3 format)")
+                    
+                    # List available variables
+                    print(f"Available variables: {list(f.keys())}")
+                    
+                    # Load channel matrices
+                    # Note: h5py loads in REVERSED dimension order compared to MATLAB!
+                    # MATLAB saves as [768,14,4,2,10,1000]
+                    # h5py loads as [1000,10,2,4,14,768]
+                    # So we need to transpose/permute to get correct order
+                    
+                    if 'H_perfect_all' in f:
+                        H_perfect_h5 = f['H_perfect_all']
+                        print(f"   H_perfect_all shape in file: {H_perfect_h5.shape}")
+                        print(f"   H_perfect_all dtype: {H_perfect_h5.dtype}")
+                        
+                        # Load the data
+                        H_perfect_data = H_perfect_h5[()]
+                        
+                        # Check if complex
+                        if np.iscomplexobj(H_perfect_data):
+                            print(f"   H_perfect_all is complex: True")
+                            H_perfect_all = H_perfect_data
+                        else:
+                            print(f"   H_perfect_all is complex: False (will convert)")
+                            # Handle real/imag storage: last dim might be [real,imag]
+                            if H_perfect_data.ndim == 7 and H_perfect_data.shape[-1] == 2:
+                                H_perfect_all = H_perfect_data[..., 0] + 1j * H_perfect_data[..., 1]
+                                print(f"   Converted from real/imag to complex")
+                            else:
+                                # Try to interpret as complex
+                                # HDF5 stores complex as compound dtype
+                                if H_perfect_data.dtype.names:
+                                    # Compound type - try different field name combinations
+                                    field_names = H_perfect_data.dtype.names
+                                    print(f"   Compound dtype with fields: {field_names}")
+                                    
+                                    if 'real' in field_names and 'imag' in field_names:
+                                        H_perfect_all = H_perfect_data['real'] + 1j * H_perfect_data['imag']
+                                        print(f"   Converted from compound dtype (real, imag)")
+                                    elif 'r' in field_names and 'i' in field_names:
+                                        H_perfect_all = H_perfect_data['r'] + 1j * H_perfect_data['i']
+                                        print(f"   Converted from compound dtype (r, i)")
+                                    else:
+                                        raise ValueError(f"Unknown compound dtype fields: {field_names}")
+                                else:
+                                    H_perfect_all = H_perfect_data
+                        
+                        print(f"   H_perfect_all loaded shape: {H_perfect_all.shape}")
+                        
+                        # Transpose to correct order if needed
+                        # Expected: [768, 14, 4, 2, 10, 1000]
+                        # h5py gives: [1000, 10, 2, 4, 14, 768]
+                        if H_perfect_all.shape[-1] == 768 and H_perfect_all.shape[0] == 1000:
+                            print(f"   Detected reversed dimensions, transposing...")
+                            H_perfect_all = np.transpose(H_perfect_all, (5, 4, 3, 2, 1, 0))
+                            print(f"   H_perfect_all after transpose: {H_perfect_all.shape}")
+                        
+                    else:
+                        raise KeyError("H_perfect_all not found in file")
+                    
+                    if 'H_estimated_all' in f:
+                        H_estimated_h5 = f['H_estimated_all']
+                        print(f"   H_estimated_all shape in file: {H_estimated_h5.shape}")
+                        print(f"   H_estimated_all dtype: {H_estimated_h5.dtype}")
+                        
+                        # Load the data
+                        H_estimated_data = H_estimated_h5[()]
+                        
+                        # Check if complex
+                        if np.iscomplexobj(H_estimated_data):
+                            print(f"   H_estimated_all is complex: True")
+                            H_estimated_all = H_estimated_data
+                        else:
+                            print(f"   H_estimated_all is complex: False (will convert)")
+                            # Handle real/imag storage
+                            if H_estimated_data.ndim == 7 and H_estimated_data.shape[-1] == 2:
+                                H_estimated_all = H_estimated_data[..., 0] + 1j * H_estimated_data[..., 1]
+                                print(f"   Converted from real/imag to complex")
+                            else:
+                                # Try compound dtype
+                                if H_estimated_data.dtype.names:
+                                    field_names = H_estimated_data.dtype.names
+                                    print(f"   Compound dtype with fields: {field_names}")
+                                    
+                                    if 'real' in field_names and 'imag' in field_names:
+                                        H_estimated_all = H_estimated_data['real'] + 1j * H_estimated_data['imag']
+                                        print(f"   Converted from compound dtype (real, imag)")
+                                    elif 'r' in field_names and 'i' in field_names:
+                                        H_estimated_all = H_estimated_data['r'] + 1j * H_estimated_data['i']
+                                        print(f"   Converted from compound dtype (r, i)")
+                                    else:
+                                        raise ValueError(f"Unknown compound dtype fields: {field_names}")
+                                else:
+                                    H_estimated_all = H_estimated_data
+                        
+                        print(f"   H_estimated_all loaded shape: {H_estimated_all.shape}")
+                        
+                        # Transpose to correct order if needed
+                        if H_estimated_all.shape[-1] == 768 and H_estimated_all.shape[0] == 1000:
+                            print(f"   Detected reversed dimensions, transposing...")
+                            H_estimated_all = np.transpose(H_estimated_all, (5, 4, 3, 2, 1, 0))
+                            print(f"   H_estimated_all after transpose: {H_estimated_all.shape}")
+                    else:
+                        raise KeyError("H_estimated_all not found in file")
+                    
+                    # Load metadata if available
+                    self.metadata = None
+                    if 'metadata' in f:
+                        print(f"   Loading metadata...")
+                        self.metadata = {}
+                        try:
+                            for key in f['metadata'].keys():
+                                self.metadata[key] = f['metadata'][key][()]
+                        except:
+                            pass
             
-            # Extract metadata if available
-            if 'metadata' in mat_data:
-                self.metadata = mat_data['metadata']
-            else:
-                self.metadata = None
+            except (OSError, KeyError) as e_h5:
+                # Fall back to scipy.io.loadmat (for older MATLAB files)
+                print(f"h5py failed ({e_h5}), trying scipy.io.loadmat...")
+                mat_data = loadmat(str(self.mat_file_path))
                 
+                H_perfect_all = mat_data['H_perfect_all']
+                H_estimated_all = mat_data['H_estimated_all']
+                
+                print(f"✅ Using scipy.io.loadmat (MATLAB v7 format)")
+                print(f"   H_perfect_all: {H_perfect_all.shape}")
+                print(f"   H_estimated_all: {H_estimated_all.shape}")
+                
+                # Extract metadata if available
+                if 'metadata' in mat_data:
+                    self.metadata = mat_data['metadata']
+                else:
+                    self.metadata = None
+            
+            # Verify shapes
+            expected_shape_prefix = (768, 14, 4, 2, 10)
+            print(f"\nVerifying shapes...")
+            print(f"   Expected: {expected_shape_prefix + (1000,)}")
+            print(f"   H_perfect_all: {H_perfect_all.shape}")
+            print(f"   H_estimated_all: {H_estimated_all.shape}")
+            
+            assert H_perfect_all.shape[:5] == expected_shape_prefix, \
+                f"Unexpected H_perfect shape: {H_perfect_all.shape}, expected {expected_shape_prefix + (1000,)}"
+            assert H_estimated_all.shape[:5] == expected_shape_prefix, \
+                f"Unexpected H_estimated shape: {H_estimated_all.shape}, expected {expected_shape_prefix + (1000,)}"
+            
             # Split train/test (800 train, 200 test)
             if self.train:
                 self.H_perfect = H_perfect_all[..., :800]
                 self.H_noisy = H_estimated_all[..., :800]
                 if self.metadata is not None:
                     self.metadata_subset = {
-                        k: v[:800] if hasattr(v, '__len__') else v 
+                        k: v[:800] if hasattr(v, '__len__') and len(v) == 1000 else v 
                         for k, v in self.metadata.items()
                     }
             else:
@@ -97,22 +238,23 @@ class CSIDataset(Dataset):
                 self.H_noisy = H_estimated_all[..., 800:]
                 if self.metadata is not None:
                     self.metadata_subset = {
-                        k: v[800:] if hasattr(v, '__len__') else v 
+                        k: v[800:] if hasattr(v, '__len__') and len(v) == 1000 else v 
                         for k, v in self.metadata.items()
                     }
             
-            # Verify shapes
-            expected_shape_prefix = (768, 14, 4, 2, 10)
-            assert self.H_perfect.shape[:5] == expected_shape_prefix, \
-                f"Unexpected shape: {self.H_perfect.shape}"
-            assert self.H_noisy.shape[:5] == expected_shape_prefix, \
-                f"Unexpected shape: {self.H_noisy.shape}"
-            
-            print(f"✅ Data loaded successfully")
+            print(f"\n✅ Data loaded successfully")
+            print(f"   Dataset split: {'Train (first 800)' if self.train else 'Test (last 200)'}")
             print(f"   Perfect CSI: {H_perfect_all.shape} -> {self.H_perfect.shape}")
             print(f"   Noisy CSI: {H_estimated_all.shape} -> {self.H_noisy.shape}")
+            print(f"   Data type: {self.H_perfect.dtype}")
+            print(f"   Complex: {np.iscomplexobj(self.H_perfect)}")
+            print(f"   Sample value check: max={np.max(np.abs(self.H_perfect)):.4f}, mean={np.mean(np.abs(self.H_perfect)):.4f}")
             
         except Exception as e:
+            print(f"\n❌ Error loading data!")
+            print(f"   Error: {str(e)}")
+            import traceback
+            traceback.print_exc()
             raise RuntimeError(f"Failed to load .mat file: {e}")
     
     def _compute_normalization_stats(self):

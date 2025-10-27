@@ -25,9 +25,11 @@ class DDIM:
         timesteps=300,
         beta_start=1e-4,
         beta_end=0.035,
-        beta_schedule='linear'
+        beta_schedule='linear',
+        device='cuda'
     ):
         self.timesteps = timesteps
+        self.device = device
         
         # Create noise schedule
         if beta_schedule == 'linear':
@@ -42,9 +44,27 @@ class DDIM:
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod)
         
+        # Move to device
+        self.betas = self.betas.to(device)
+        self.alphas = self.alphas.to(device)
+        self.alphas_cumprod = self.alphas_cumprod.to(device)
+        self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
+        self.sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
+        
         print(f"✅ DDIM initialized:")
         print(f"   Timesteps: {timesteps}")
         print(f"   Beta range: [{beta_start:.6f}, {beta_end:.6f}]")
+        print(f"   Device: {device}")
+    
+    def to(self, device):
+        """Move all tensors to device."""
+        self.device = device
+        self.betas = self.betas.to(device)
+        self.alphas = self.alphas.to(device)
+        self.alphas_cumprod = self.alphas_cumprod.to(device)
+        self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
+        self.sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
+        return self
     
     def forward_diffusion(self, x0, t):
         """
@@ -59,8 +79,15 @@ class DDIM:
             x_t: [B, C, H, W] noisy data
             noise: [B, C, H, W] added noise
         """
-        sqrt_alpha_cumprod_t = self.sqrt_alphas_cumprod[t].to(x0.device)
-        sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t].to(x0.device)
+        # Get device from input
+        device = x0.device
+        
+        # Ensure schedules are on the same device
+        if self.sqrt_alphas_cumprod.device != device:
+            self.to(device)
+        
+        sqrt_alpha_cumprod_t = self.sqrt_alphas_cumprod[t]
+        sqrt_one_minus_alpha_cumprod_t = self.sqrt_one_minus_alphas_cumprod[t]
         
         # Reshape for broadcasting
         sqrt_alpha_cumprod_t = sqrt_alpha_cumprod_t[:, None, None, None]
@@ -91,6 +118,10 @@ class DDIM:
         device = x_t.device
         B = x_t.shape[0]
         
+        # Ensure schedules are on correct device
+        if self.alphas_cumprod.device != device:
+            self.to(device)
+        
         # Create sampling timestep schedule (e.g., [300, 200, 100, 0])
         timestep_seq = np.linspace(self.timesteps-1, 0, num_steps, dtype=int)
         
@@ -104,8 +135,8 @@ class DDIM:
             noise_pred = model(x, t_tensor)
             
             # Get alpha values
-            alpha_t = self.alphas_cumprod[t].to(device)
-            alpha_t_next = self.alphas_cumprod[t_next].to(device) if t_next >= 0 else torch.tensor(1.0).to(device)
+            alpha_t = self.alphas_cumprod[t]
+            alpha_t_next = self.alphas_cumprod[t_next] if t_next >= 0 else torch.tensor(1.0, device=device)
             
             # Predict x0
             x0_pred = (x - torch.sqrt(1 - alpha_t) * noise_pred) / torch.sqrt(alpha_t)
@@ -126,6 +157,6 @@ class DDIM:
         # Final step to t=0
         t_final = torch.zeros((B,), device=device, dtype=torch.long)
         noise_pred = model(x, t_final)
-        x0_pred = (x - torch.sqrt(1 - self.alphas_cumprod[0].to(device)) * noise_pred) / torch.sqrt(self.alphas_cumprod[0].to(device))
+        x0_pred = (x - torch.sqrt(1 - self.alphas_cumprod[0]) * noise_pred) / torch.sqrt(self.alphas_cumprod[0])
         
         return x0_pred

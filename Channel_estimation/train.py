@@ -310,7 +310,8 @@ def main(args):
     diffusion = DDIM(
         timesteps=args.timesteps,
         beta_start=args.beta_start,
-        beta_end=args.beta_end
+        beta_end=args.beta_end,
+        device=device
     )
     
     # Create loss
